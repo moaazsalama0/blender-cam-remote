@@ -2,7 +2,7 @@ bl_info = {
     "name": "Phone Camera Controller",
     "author": "Moaaz Salama",
     "version": (0,0,1),
-    "blender": (3, 0, 0),
+    "blender": (5, 1, 0),
     "location": "View3D > Sidebar > Phone Cam",
     "description": "Control Blender camera via mobile phone sensors",
     "category": "Camera",
@@ -299,36 +299,44 @@ class PHONECAM_OT_modal(bpy.types.Operator):
                     self._is_calibrated = False
                 
                 # Wait until the phone actually sends real data (not zeros)
-                # --- CALIBRATION ---
+                # CALOBRATION
                 if not self._is_calibrated and (phone_data["yaw"] != 0.0 or phone_data["pitch"] != 0.0):
-                    self._start_cam_x = cam.rotation_euler.x
-                    self._start_cam_y = cam.rotation_euler.y
-                    self._start_cam_z = cam.rotation_euler.z
-                    
-                    # In landscape: gamma = up/down tilt, beta = left/right tilt (unused for roll)
-                    self._start_phone_pitch = math.radians(phone_data["roll"])    # gamma
-                    self._start_phone_yaw   = math.radians(phone_data["yaw"])     # alpha
-                    
+                    cam.rotation_mode = 'QUATERNION'
+                    self._start_cam_q = cam.rotation_quaternion.copy()
+
+                    self._start_phone_pitch = math.radians(phone_data["roll"])
+                    self._start_phone_yaw   = math.radians(phone_data["yaw"])
+
                     self._is_calibrated = True
 
-                # --- APPLY ROTATION ---
+                # --- APPLY ROTATION (Quaternion) ---
                 if self._is_calibrated:
-                    curr_phone_pitch = math.radians(phone_data["roll"])    # gamma drives up/down
-                    curr_phone_yaw   = math.radians(phone_data["yaw"])     # alpha drives left/right
+                    curr_phone_pitch = math.radians(phone_data["roll"])
+                    curr_phone_yaw   = math.radians(phone_data["yaw"])
 
-                    delta_pitch = curr_phone_pitch - self._start_phone_pitch
-                    delta_yaw   = curr_phone_yaw   - self._start_phone_yaw
+                    delta_pitch = -(curr_phone_pitch - self._start_phone_pitch)
+                    delta_yaw   =   (curr_phone_yaw   - self._start_phone_yaw)   # FIX: removed negation to fix inverted left/right
 
-                    # Wrap-around fix for yaw
                     if delta_yaw >  math.pi: delta_yaw -= 2 * math.pi
                     if delta_yaw < -math.pi: delta_yaw += 2 * math.pi
 
-                    target_x = self._start_cam_x - delta_pitch
-                    target_z = self._start_cam_z + delta_yaw  # negative because landscape flips this axis
+                    # FIX: Shift pitch window upward by 20° so the "straight ahead" pose
+                    # is higher, and clamp to ±60° to prevent gimbal-flip zone.
+                    PITCH_SHIFT = math.radians(20.0)   # positive = raises the view
+                    PITCH_LIMIT = math.radians(60.0)   # half-window before flip zone
+                    delta_pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, delta_pitch + PITCH_SHIFT))
+
+                    from mathutils import Quaternion
+
+                    # Build delta quaternions for each axis independently
+                    q_pitch = Quaternion((1, 0, 0), delta_pitch)
+                    q_yaw   = Quaternion((0, 0, 1), delta_yaw)
+
+                    # Compose: start rotation → apply yaw globally → apply pitch locally
+                    target_q = q_yaw @ self._start_cam_q @ q_pitch
 
                     factor = 1.0 - props.smoothing
-                    cam.rotation_euler.x += (target_x - cam.rotation_euler.x) * factor
-                    cam.rotation_euler.z += (target_z - cam.rotation_euler.z) * factor
+                    cam.rotation_quaternion = cam.rotation_quaternion.slerp(target_q, factor)
                 
                 # --- APPLY MOVEMENT ---
                 forward_vec = cam.matrix_world.to_quaternion() @ Vector((0, 0, -1))
