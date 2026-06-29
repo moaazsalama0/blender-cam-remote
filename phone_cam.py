@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Phone Camera Controller",
-    "author": "You",
-    "version": (1, 1),
+    "author": "Moaaz Salama",
+    "version": (0,0,1),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Phone Cam",
     "description": "Control Blender camera via mobile phone sensors",
@@ -293,29 +293,42 @@ class PHONECAM_OT_modal(bpy.types.Operator):
         if event.type == 'TIMER':
             cam = context.scene.camera
             if cam:
+                # --- CALIBRATION (Prevents snapping to a fixed position) ---
+                # We only calibrate once when streaming starts
+                if not hasattr(self, '_is_calibrated'):
+                    self._is_calibrated = False
+                
+                # Wait until the phone actually sends real data (not zeros)
+                # --- CALIBRATION ---
+                if not self._is_calibrated and (phone_data["yaw"] != 0.0 or phone_data["pitch"] != 0.0):
+                    self._start_cam_x = cam.rotation_euler.x
+                    self._start_cam_y = cam.rotation_euler.y
+                    self._start_cam_z = cam.rotation_euler.z
+                    
+                    # In landscape: gamma = up/down tilt, beta = left/right tilt (unused for roll)
+                    self._start_phone_pitch = math.radians(phone_data["roll"])    # gamma
+                    self._start_phone_yaw   = math.radians(phone_data["yaw"])     # alpha
+                    
+                    self._is_calibrated = True
+
                 # --- APPLY ROTATION ---
-                # deviceorientation Euler angles composed as quaternions to
-                # avoid gimbal lock and fix axis mapping for landscape hold.
-                #
-                # Phone held LANDSCAPE (screen facing up = rest position):
-                #   beta  (pitch) = tilt toward/away from you, range -180..180
-                #   gamma (roll)  = tilt left/right,           range  -90..90
-                #   alpha (yaw)   = compass heading — ignored (drifty, useless)
-                #
-                # Landscape mapping to Blender camera:
-                #   look up/down   <- gamma - 90deg  (flat phone = forward)
-                #   look left/right <- -beta
-                #   roll = 0  (omitted for comfort)
-                from mathutils import Quaternion as Quat
-                beta  = math.radians(phone_data["pitch"])
-                gamma = math.radians(phone_data["roll"])
+                if self._is_calibrated:
+                    curr_phone_pitch = math.radians(phone_data["roll"])    # gamma drives up/down
+                    curr_phone_yaw   = math.radians(phone_data["yaw"])     # alpha drives left/right
 
-                q_pitch = Quat((1, 0, 0), gamma - math.radians(90))
-                q_yaw   = Quat((0, 0, 1), -beta)
-                target_quat = q_yaw @ q_pitch
+                    delta_pitch = curr_phone_pitch - self._start_phone_pitch
+                    delta_yaw   = curr_phone_yaw   - self._start_phone_yaw
 
-                cam.rotation_mode = 'QUATERNION'
-                cam.rotation_quaternion = cam.rotation_quaternion.slerp(target_quat, 1.0 - props.smoothing)
+                    # Wrap-around fix for yaw
+                    if delta_yaw >  math.pi: delta_yaw -= 2 * math.pi
+                    if delta_yaw < -math.pi: delta_yaw += 2 * math.pi
+
+                    target_x = self._start_cam_x - delta_pitch
+                    target_z = self._start_cam_z + delta_yaw  # negative because landscape flips this axis
+
+                    factor = 1.0 - props.smoothing
+                    cam.rotation_euler.x += (target_x - cam.rotation_euler.x) * factor
+                    cam.rotation_euler.z += (target_z - cam.rotation_euler.z) * factor
                 
                 # --- APPLY MOVEMENT ---
                 forward_vec = cam.matrix_world.to_quaternion() @ Vector((0, 0, -1))
