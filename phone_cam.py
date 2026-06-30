@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Phone Camera Controller",
     "author": "Moaaz Salama",
-    "version": (0,0,1),
+    "version": (0,0,2),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > Phone Cam",
     "description": "Control Blender camera via mobile phone sensors",
@@ -13,15 +13,19 @@ import math
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from mathutils import Euler, Vector
+from mathutils import Vector
 
 # Global dictionary to hold phone data
+# q_x/y/z/w: quaternion from AbsoluteOrientationSensor
+# joy_x/y: virtual joystick
 phone_data = {
-    "yaw": 0.0,
-    "pitch": 0.0,
-    "roll": 0.0,
+    "q_x": 0.0,
+    "q_y": 0.0,
+    "q_z": 0.0,
+    "q_w": 1.0,
     "joy_x": 0.0,
-    "joy_y": 0.0
+    "joy_y": 0.0,
+    "sensor_ready": False,
 }
 
 server_thread = None
@@ -35,141 +39,385 @@ HTML_PAGE = """
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Blender Cam Controller</title>
+    <title>CAM</title>
     <style>
-        * { box-sizing: border-box; }
-        body { margin: 0; background: #1a1a1a; color: white; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; touch-action: none; }
-        #status { margin-bottom: 10px; font-size: 16px; text-align: center; padding: 0 20px; }
-        #connectBtn { padding: 15px 30px; font-size: 20px; background: #4d7a4d; color: white; border: none; border-radius: 10px; cursor: pointer; margin-bottom: 10px; }
-        #debug { font-size: 12px; color: #aaa; text-align: center; padding: 8px; background: #2a2a2a; border-radius: 6px; width: 90%; margin-bottom: 10px; min-height: 60px; }
-        #joystickArea { position: absolute; bottom: 0; left: 0; width: 50%; height: 45%; background: rgba(255,255,255,0.05); border-top: 1px solid rgba(255,255,255,0.1); border-right: 1px solid rgba(255,255,255,0.1); }
-        #joystickLabel { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); font-size: 11px; color: #666; pointer-events: none; }
-        #joystick { position: absolute; width: 80px; height: 80px; background: rgba(255,255,255,0.3); border-radius: 50%; transform: translate(-50%, -50%); display: none; pointer-events: none; }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: #111;
+            color: #ccc;
+            font-family: 'Courier New', monospace;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            touch-action: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ---------- LAYOUT ---------- */
+        #app {
+            display: none; /* shown after sensor init */
+            width: 100%;
+            height: 100%;
+            flex-direction: row;
+        }
+
+        /* LEFT: joystick */
+        #leftPanel {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        /* RIGHT: debug */
+        #rightPanel {
+            width: 160px;
+            border-left: 1px solid #222;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 18px 14px;
+            gap: 12px;
+        }
+
+        /* ---------- INIT SCREEN ---------- */
+        #initScreen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        #initScreen p {
+            font-size: 13px;
+            color: #555;
+            letter-spacing: 0.05em;
+        }
+
+        .btn {
+            background: none;
+            border: 1px solid #444;
+            color: #aaa;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            letter-spacing: 0.1em;
+            padding: 10px 24px;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: border-color 0.2s, color 0.2s;
+        }
+        .btn:active { background: #1e1e1e; }
+        .btn.danger { border-color: #5a1f1f; color: #c0392b; }
+        .btn.danger:active { background: #1e1010; }
+
+        /* ---------- JOYSTICK ---------- */
+        #joyBase {
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            border: 1px solid #2a2a2a;
+            background: radial-gradient(circle at center, #1c1c1c 0%, #141414 100%);
+            position: relative;
+            touch-action: none;
+        }
+
+        #joyKnob {
+            width: 72px;
+            height: 72px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 38% 35%, #3a3a3a, #1a1a1a);
+            border: 1px solid #333;
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            transition: transform 0.08s ease-out;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.6);
+        }
+
+        /* crosshair lines on base */
+        #joyBase::before, #joyBase::after {
+            content: '';
+            position: absolute;
+            background: #222;
+        }
+        #joyBase::before { width: 1px; height: 60%; top: 20%; left: 50%; }
+        #joyBase::after  { width: 60%; height: 1px; left: 20%; top: 50%; }
+
+        /* ---------- DEBUG PANEL ---------- */
+        .debugSection {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .debugLabel {
+            font-size: 9px;
+            letter-spacing: 0.15em;
+            color: #333;
+            text-transform: uppercase;
+        }
+
+        /* WiFi band pill */
+        #wifiBand {
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            padding: 3px 0;
+            color: #555;
+        }
+        #wifiBand.ghz5  { color: #2ecc71; }
+        #wifiBand.ghz24 { color: #f1c40f; }
+
+        /* Quaternion rows */
+        .qRow {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #444;
+        }
+        .qRow span.axis { color: #333; }
+        .qRow span.val  { color: #666; font-variant-numeric: tabular-nums; }
+
+        /* Status dot */
+        #statusDot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: #333;
+            display: inline-block;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        #statusDot.active { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
+
+        #statusText {
+            font-size: 10px;
+            color: #444;
+            letter-spacing: 0.05em;
+            vertical-align: middle;
+        }
     </style>
 </head>
 <body>
-    <div id="status">Tap the button to enable motion sensors</div>
-    <button id="connectBtn">&#x1F4F1; Enable Motion Sensors</button>
-    <div id="debug">Sensor data will appear here...</div>
 
-    <div id="joystickArea">
-        <div id="joystickLabel">MOVE (drag here)</div>
+<!-- INIT SCREEN -->
+<div id="initScreen">
+    <p>BLENDER CAM</p>
+    <button class="btn" id="connectBtn">ENABLE SENSORS</button>
+</div>
+
+<!-- MAIN APP (landscape) -->
+<div id="app" style="display:none; width:100%; height:100%; flex-direction:row;">
+
+    <!-- LEFT: joystick -->
+    <div id="leftPanel" style="flex:1; display:flex; align-items:center; justify-content:center; position:relative;">
+        <div id="joyBase">
+            <div id="joyKnob"></div>
+        </div>
     </div>
-    <div id="joystick"></div>
 
-    <script>
-        let joyActive = false;
-        let sensorFired = false;
-        const connectBtn = document.getElementById('connectBtn');
-        const statusDiv = document.getElementById('status');
-        const debugDiv = document.getElementById('debug');
-        const joystick = document.getElementById('joystick');
-        const joystickArea = document.getElementById('joystickArea');
+    <!-- RIGHT: debug -->
+    <div id="rightPanel" style="width:160px; border-left:1px solid #1e1e1e; display:flex; flex-direction:column; justify-content:space-between; padding:18px 14px;">
 
-        let phoneData = { yaw: 0, pitch: 0, roll: 0, joy_x: 0, joy_y: 0 };
+        <div style="display:flex; flex-direction:column; gap:18px;">
 
-        connectBtn.addEventListener('click', async () => {
-            debugDiv.innerText = 'Button clicked...';
+            <div class="debugSection">
+                <div class="debugLabel">status</div>
+                <div>
+                    <span id="statusDot"></span>
+                    <span id="statusText">waiting</span>
+                </div>
+            </div>
 
-            // iOS Safari needs an explicit permission prompt
-            if (typeof DeviceOrientationEvent !== 'undefined' &&
-                typeof DeviceOrientationEvent.requestPermission === 'function') {
-                try {
-                    const permission = await DeviceOrientationEvent.requestPermission();
-                    if (permission === 'granted') {
-                        startSensors();
-                    } else {
-                        statusDiv.innerText = 'Permission denied.';
-                        debugDiv.innerText = 'iOS sensor permission was denied by user.';
-                    }
-                } catch(e) {
-                    statusDiv.innerText = 'Permission error.';
-                    debugDiv.innerText = 'Error requesting permission: ' + e;
-                }
-            } else if (typeof DeviceOrientationEvent !== 'undefined') {
-                // Android (Chrome, Firefox) — no JS permission needed, just start
-                startSensors();
+            <div class="debugSection">
+                <div class="debugLabel">wifi band</div>
+                <div id="wifiBand">—</div>
+            </div>
+
+            <div class="debugSection">
+                <div class="debugLabel">orientation</div>
+                <div class="qRow"><span class="axis">w</span><span class="val" id="qw">—</span></div>
+                <div class="qRow"><span class="axis">x</span><span class="val" id="qx">—</span></div>
+                <div class="qRow"><span class="axis">y</span><span class="val" id="qy">—</span></div>
+                <div class="qRow"><span class="axis">z</span><span class="val" id="qz">—</span></div>
+            </div>
+
+        </div>
+
+        <button class="btn danger" id="stopBtn">STOP</button>
+
+    </div>
+</div>
+
+<script>
+    const connectBtn  = document.getElementById('connectBtn');
+    const initScreen  = document.getElementById('initScreen');
+    const appDiv      = document.getElementById('app');
+    const statusDot   = document.getElementById('statusDot');
+    const statusText  = document.getElementById('statusText');
+    const wifiBandEl  = document.getElementById('wifiBand');
+    const joyBase     = document.getElementById('joyBase');
+    const joyKnob     = document.getElementById('joyKnob');
+    const stopBtn     = document.getElementById('stopBtn');
+
+    let phoneData = { q_x: 0, q_y: 0, q_z: 0, q_w: 1, joy_x: 0, joy_y: 0, sensor_ready: false };
+    let joyActive = false;
+    let joyOrigin = { x: 0, y: 0 };
+    const JOY_RADIUS = 54; // max knob travel in px
+
+    // --- WiFi band detection via timing (RTT heuristic) ---
+    function detectWifiBand() {
+        const t0 = performance.now();
+        fetch('/ping?' + Date.now()).then(() => {
+            const rtt = performance.now() - t0;
+            // 5 GHz typically <10ms RTT on LAN, 2.4 GHz >15ms
+            if (rtt < 14) {
+                wifiBandEl.textContent = '5 GHz';
+                wifiBandEl.className = 'ghz5';
             } else {
-                statusDiv.innerText = 'Sensors not supported on this browser.';
-                debugDiv.innerText = 'DeviceOrientationEvent is undefined on this device/browser.';
+                wifiBandEl.textContent = '2.4 GHz';
+                wifiBandEl.className = 'ghz24';
             }
+        }).catch(() => {
+            wifiBandEl.textContent = 'unknown';
+            wifiBandEl.className = '';
         });
+    }
 
-        function startSensors() {
-            connectBtn.style.display = 'none';
-            statusDiv.innerText = 'Waiting for first sensor event...';
-            debugDiv.innerHTML = 'Registered listener. Move your phone to trigger...<br><br>' +
-                '<small>If nothing appears: Android Settings \u2192 Apps \u2192 Firefox \u2192 Permissions \u2192 enable <b>Motion sensors</b></small>';
+    // --- Sensor init ---
+    connectBtn.addEventListener('click', async () => {
+        if (typeof AbsoluteOrientationSensor !== 'undefined') {
+            try {
+                await Promise.all([
+                    navigator.permissions.query({ name: 'accelerometer' }),
+                    navigator.permissions.query({ name: 'gyroscope' }),
+                    navigator.permissions.query({ name: 'magnetometer' }),
+                ]);
+                const sensor = new AbsoluteOrientationSensor({ frequency: 60 });
+                sensor.addEventListener('error', (e) => {
+                    statusText.textContent = 'error';
+                });
+                sensor.addEventListener('reading', () => {
+                    phoneData.q_x = sensor.quaternion[0];
+                    phoneData.q_y = sensor.quaternion[1];
+                    phoneData.q_z = sensor.quaternion[2];
+                    phoneData.q_w = sensor.quaternion[3];
+                    phoneData.sensor_ready = true;
+                    updateDebug();
+                });
+                sensor.start();
+                onSensorReady();
+            } catch(e) {
+                startDeviceOrientation();
+            }
+        } else {
+            startDeviceOrientation();
+        }
+        setInterval(sendData, 16);
+        detectWifiBand();
+        setInterval(detectWifiBand, 5000);
+    });
 
-            window.addEventListener('deviceorientation', (event) => {
-                if (!sensorFired) {
-                    sensorFired = true;
-                    statusDiv.innerText = '\u2705 Sensors Active! Streaming to Blender...';
-                }
-                phoneData.yaw   = event.alpha != null ? event.alpha : 0;
-                phoneData.pitch = event.beta  != null ? event.beta  : 0;
-                phoneData.roll  = event.gamma != null ? event.gamma : 0;
+    function onSensorReady() {
+        initScreen.style.display = 'none';
+        appDiv.style.display = 'flex';
+        statusDot.className = 'active';
+        statusText.textContent = 'live';
+    }
 
-                debugDiv.innerHTML =
-                    'YAW &nbsp;(alpha): <b>' + phoneData.yaw.toFixed(1)   + '&deg;</b><br>' +
-                    'PITCH (beta):&nbsp; <b>' + phoneData.pitch.toFixed(1) + '&deg;</b><br>' +
-                    'ROLL &nbsp;(gamma): <b>' + phoneData.roll.toFixed(1)  + '&deg;</b>';
+    function startDeviceOrientation() {
+        function listen() {
+            window.addEventListener('deviceorientation', (e) => {
+                const a = (e.alpha||0)*Math.PI/180;
+                const b = (e.beta ||0)*Math.PI/180;
+                const g = (e.gamma||0)*Math.PI/180;
+                const cy=Math.cos(a*.5),sy=Math.sin(a*.5);
+                const cp=Math.cos(b*.5),sp=Math.sin(b*.5);
+                const cr=Math.cos(g*.5),sr=Math.sin(g*.5);
+                phoneData.q_w = cy*cp*cr+sy*sp*sr;
+                phoneData.q_x = cy*sp*cr+sy*cp*sr;
+                phoneData.q_y = sy*cp*cr-cy*sp*sr;
+                phoneData.q_z = cy*cp*sr-sy*sp*cr;
+                phoneData.sensor_ready = true;
+                updateDebug();
             }, true);
-
-            // Also try deviceorientationabsolute as a fallback (some Android devices)
-            window.addEventListener('deviceorientationabsolute', (event) => {
-                if (sensorFired) return; // already working
-                sensorFired = true;
-                statusDiv.innerText = '\u2705 Sensors Active (absolute)! Streaming...';
-                phoneData.yaw   = event.alpha != null ? event.alpha : 0;
-                phoneData.pitch = event.beta  != null ? event.beta  : 0;
-                phoneData.roll  = event.gamma != null ? event.gamma : 0;
-            }, true);
-
-            setInterval(sendData, 33);
         }
-
-        // ---- Joystick ----
-        joystickArea.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            joyActive = true;
-            joystick.style.display = 'block';
-            updateJoystick(e);
-        }, { passive: false });
-
-        joystickArea.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-            if (joyActive) updateJoystick(e);
-        }, { passive: false });
-
-        joystickArea.addEventListener('touchend', () => {
-            joyActive = false;
-            joystick.style.display = 'none';
-            phoneData.joy_x = 0;
-            phoneData.joy_y = 0;
-        });
-
-        function updateJoystick(e) {
-            const touch = e.touches[0];
-            const rect = joystickArea.getBoundingClientRect();
-            let x = touch.clientX - rect.left;
-            let y = touch.clientY - rect.top;
-
-            joystick.style.left = x + 'px';
-            joystick.style.top  = y + 'px';
-
-            phoneData.joy_x =  (x / rect.width)  * 2 - 1;
-            phoneData.joy_y = -((y / rect.height) * 2 - 1);
+        if (typeof DeviceOrientationEvent !== 'undefined' &&
+            typeof DeviceOrientationEvent.requestPermission === 'function') {
+            DeviceOrientationEvent.requestPermission()
+                .then(p => { if (p==='granted') { listen(); onSensorReady(); } })
+                .catch(() => {});
+        } else {
+            listen();
+            onSensorReady();
         }
+    }
 
-        function sendData() {
-            fetch('/data', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(phoneData)
-            }).catch(() => {});
+    // --- Debug update ---
+    function updateDebug() {
+        document.getElementById('qw').textContent = phoneData.q_w.toFixed(3);
+        document.getElementById('qx').textContent = phoneData.q_x.toFixed(3);
+        document.getElementById('qy').textContent = phoneData.q_y.toFixed(3);
+        document.getElementById('qz').textContent = phoneData.q_z.toFixed(3);
+    }
+
+    // --- Joystick ---
+    joyBase.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        const t = e.touches[0];
+        const r = joyBase.getBoundingClientRect();
+        joyOrigin = { x: r.left + r.width/2, y: r.top + r.height/2 };
+        joyActive = true;
+        moveKnob(t.clientX, t.clientY);
+    }, { passive: false });
+
+    joyBase.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        if (!joyActive) return;
+        moveKnob(e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: false });
+
+    joyBase.addEventListener('touchend', () => {
+        joyActive = false;
+        phoneData.joy_x = 0;
+        phoneData.joy_y = 0;
+        joyKnob.style.transform = 'translate(-50%, -50%)';
+    });
+
+    function moveKnob(cx, cy) {
+        let dx = cx - joyOrigin.x;
+        let dy = cy - joyOrigin.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist > JOY_RADIUS) {
+            dx = dx / dist * JOY_RADIUS;
+            dy = dy / dist * JOY_RADIUS;
         }
-    </script>
+        joyKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+        phoneData.joy_x =  dx / JOY_RADIUS;
+        phoneData.joy_y = -dy / JOY_RADIUS;
+    }
+
+    // --- Stop button ---
+    stopBtn.addEventListener('click', () => {
+        fetch('/stop', { method: 'POST' }).catch(() => {});
+        statusDot.className = '';
+        statusText.textContent = 'stopped';
+        appDiv.style.display = 'none';
+        initScreen.style.display = 'flex';
+    });
+
+    // --- Send loop ---
+    function sendData() {
+        fetch('/data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(phoneData)
+        }).catch(() => {});
+    }
+</script>
 </body>
 </html>
 """
@@ -184,25 +432,44 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(HTML_PAGE.encode('utf-8'))
+        elif self.path.startswith('/ping'):
+            # Used by the client to measure RTT for WiFi band detection
+            self.send_response(200)
+            self.end_headers()
 
     def do_POST(self):
+        if self.path == '/stop':
+            # Phone tapped Stop — signal Blender to stop streaming
+            def stop_streaming():
+                import bpy
+                bpy.context.scene.phone_cam_props.is_streaming = False
+                return None  # don't repeat
+            import bpy
+            bpy.app.timers.register(stop_streaming, first_interval=0.0)
+            self.send_response(200)
+            self.end_headers()
+            return
+
         if self.path == '/data':
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
-            
             global phone_data
             try:
                 data = json.loads(post_data.decode('utf-8'))
-                phone_data["yaw"] = data.get("yaw", 0.0)
-                phone_data["pitch"] = data.get("pitch", 0.0)
-                phone_data["roll"] = data.get("roll", 0.0)
+                phone_data["q_x"] = data.get("q_x", 0.0)
+                phone_data["q_y"] = data.get("q_y", 0.0)
+                phone_data["q_z"] = data.get("q_z", 0.0)
+                phone_data["q_w"] = data.get("q_w", 1.0)
                 phone_data["joy_x"] = data.get("joy_x", 0.0)
                 phone_data["joy_y"] = data.get("joy_y", 0.0)
-            except Exception as e:
+                phone_data["sensor_ready"] = data.get("sensor_ready", False)
+            except Exception:
                 pass
-            
             self.send_response(200)
             self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # Suppress server logs in Blender console
 
 def run_server():
     global httpd
@@ -215,8 +482,8 @@ def run_server():
 class PhoneCamSettings(bpy.types.PropertyGroup):
     is_streaming: bpy.props.BoolProperty(name="Streaming", default=False)
     is_recording: bpy.props.BoolProperty(name="Recording", default=False)
-    smoothing: bpy.props.FloatProperty(name="Smoothing", default=0.2, min=0.0, max=0.95)
-    move_speed: bpy.props.FloatProperty(name="Move Speed", default=0.5, min=0.0, max=10.0)
+    smoothing:    bpy.props.FloatProperty(name="Smoothing",   default=0.2, min=0.0, max=0.95)
+    move_speed:   bpy.props.FloatProperty(name="Move Speed",  default=0.5, min=0.0, max=10.0)
 
 class PHONECAM_OT_start_stream(bpy.types.Operator):
     bl_idname = "phonecam.start_stream"
@@ -226,14 +493,11 @@ class PHONECAM_OT_start_stream(bpy.types.Operator):
     def execute(self, context):
         global server_thread
         props = context.scene.phone_cam_props
-        
         if not context.scene.camera:
             self.report({'ERROR'}, "No active camera in the scene!")
             return {'CANCELLED'}
-
         server_thread = threading.Thread(target=run_server, daemon=True)
         server_thread.start()
-
         bpy.ops.phonecam.modal('INVOKE_DEFAULT')
         props.is_streaming = True
         self.report({'INFO'}, "Server started! Open http://[your-ip]:8000 on your phone.")
@@ -248,7 +512,6 @@ class PHONECAM_OT_stop_stream(bpy.types.Operator):
         global httpd
         props = context.scene.phone_cam_props
         props.is_streaming = False
-        
         if httpd:
             httpd.shutdown()
             httpd = None
@@ -262,8 +525,6 @@ class PHONECAM_OT_toggle_record(bpy.types.Operator):
     def execute(self, context):
         props = context.scene.phone_cam_props
         props.is_recording = not props.is_recording
-        
-        # Automatically play/pause the timeline when recording is toggled!
         if props.is_recording:
             if not context.screen.is_animation_playing:
                 bpy.ops.screen.animation_play()
@@ -285,6 +546,8 @@ class PHONECAM_OT_modal(bpy.types.Operator):
     _current_frame = 0
 
     def modal(self, context, event):
+        from mathutils import Quaternion
+
         props = context.scene.phone_cam_props
         if not props.is_streaming:
             self.cancel(context)
@@ -292,64 +555,82 @@ class PHONECAM_OT_modal(bpy.types.Operator):
 
         if event.type == 'TIMER':
             cam = context.scene.camera
-            if cam:
-                # --- CALIBRATION (Prevents snapping to a fixed position) ---
-                # We only calibrate once when streaming starts
-                if not hasattr(self, '_is_calibrated'):
-                    self._is_calibrated = False
-                
-                # Wait until the phone actually sends real data (not zeros)
-                # CALOBRATION
-                if not self._is_calibrated and (phone_data["yaw"] != 0.0 or phone_data["pitch"] != 0.0):
-                    cam.rotation_mode = 'QUATERNION'
-                    self._start_cam_q = cam.rotation_quaternion.copy()
+            if not cam or not phone_data["sensor_ready"]:
+                return {'PASS_THROUGH'}
 
-                    self._start_phone_pitch = math.radians(phone_data["roll"])
-                    self._start_phone_yaw   = math.radians(phone_data["yaw"])
+            # --- CALIBRATION ---
+            # Runs once when real sensor data first arrives.
+            # We snapshot the phone's quaternion and the camera's quaternion at that moment.
+            if not hasattr(self, '_is_calibrated'):
+                self._is_calibrated = False
 
-                    self._is_calibrated = True
+            if not self._is_calibrated:
+                cam.rotation_mode = 'QUATERNION'
+                self._start_cam_q = cam.rotation_quaternion.copy()
 
-                # --- APPLY ROTATION (Quaternion) ---
-                if self._is_calibrated:
-                    curr_phone_pitch = math.radians(phone_data["roll"])
-                    curr_phone_yaw   = math.radians(phone_data["yaw"])
+                # Snapshot the raw phone quaternion at calibration time
+                self._start_phone_q = Quaternion((
+                    phone_data["q_w"],
+                    phone_data["q_x"],
+                    phone_data["q_y"],
+                    phone_data["q_z"],
+                ))
+                # Pre-compute its inverse so we can extract delta each frame
+                self._start_phone_q_inv = self._start_phone_q.inverted()
+                self._is_calibrated = True
 
-                    delta_pitch = -(curr_phone_pitch - self._start_phone_pitch)
-                    delta_yaw   =   (curr_phone_yaw   - self._start_phone_yaw)   # FIX: removed negation to fix inverted left/right
+            # --- APPLY ROTATION ---
+            # Build current phone quaternion (sensor space: x-forward, y-left, z-up)
+            curr_phone_q = Quaternion((
+                phone_data["q_w"],
+                phone_data["q_x"],
+                phone_data["q_y"],
+                phone_data["q_z"],
+            ))
 
-                    if delta_yaw >  math.pi: delta_yaw -= 2 * math.pi
-                    if delta_yaw < -math.pi: delta_yaw += 2 * math.pi
+            # Delta = how much has the phone rotated since calibration?
+            delta_q = self._start_phone_q_inv @ curr_phone_q
 
-                    # FIX: Shift pitch window upward by 20° so the "straight ahead" pose
-                    # is higher, and clamp to ±60° to prevent gimbal-flip zone.
-                    PITCH_SHIFT = math.radians(20.0)   # positive = raises the view
-                    PITCH_LIMIT = math.radians(60.0)   # half-window before flip zone
-                    delta_pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, delta_pitch + PITCH_SHIFT))
+            # --- Axis remap: phone space → Blender camera space ---
+            # AbsoluteOrientationSensor uses East-North-Up (ENU) world frame.
+            # Blender camera looks down its local -Y axis, Z is up.
+            # Remap: phone X → Blender -Y (pitch), phone Z → Blender Z (yaw)
+            # Swap and negate to align axes:
+            remapped_q = Quaternion((
+                 delta_q.w,
+                -delta_q.z,   # phone yaw (z) → Blender yaw (z), negated for correct direction
+                -delta_q.x,   # phone pitch (x) → Blender pitch (-y mapped to x)
+                 delta_q.y,
+            ))
+            remapped_q.normalize()
 
-                    from mathutils import Quaternion
+            # Apply delta on top of the camera's original rotation at calibration
+            target_q = self._start_cam_q @ remapped_q
 
-                    # Build delta quaternions for each axis independently
-                    q_pitch = Quaternion((1, 0, 0), delta_pitch)
-                    q_yaw   = Quaternion((0, 0, 1), delta_yaw)
+            # Dot-product check: ensure slerp always takes the short path
+            if cam.rotation_quaternion.dot(target_q) < 0:
+                target_q.negate()
 
-                    # Compose: start rotation → apply yaw globally → apply pitch locally
-                    target_q = q_yaw @ self._start_cam_q @ q_pitch
+            factor = 1.0 - props.smoothing
+            cam.rotation_quaternion = cam.rotation_quaternion.slerp(target_q, factor)
 
-                    factor = 1.0 - props.smoothing
-                    cam.rotation_quaternion = cam.rotation_quaternion.slerp(target_q, factor)
-                
-                # --- APPLY MOVEMENT ---
-                forward_vec = cam.matrix_world.to_quaternion() @ Vector((0, 0, -1))
-                right_vec = cam.matrix_world.to_quaternion() @ Vector((1, 0, 0))
-                
-                cam.location += forward_vec * (phone_data["joy_y"] * props.move_speed * 0.1)
-                cam.location += right_vec * (phone_data["joy_x"] * props.move_speed * 0.1)
+            # --- APPLY MOVEMENT ---
+            forward_vec = cam.matrix_world.to_quaternion() @ Vector((0, 0, -1))
+            right_vec   = cam.matrix_world.to_quaternion() @ Vector((1, 0, 0))
+            # Lock Z so movement stays on the ground plane (found-footage style)
+            forward_vec.z = 0
+            right_vec.z   = 0
+            if forward_vec.length > 0: forward_vec.normalize()
+            if right_vec.length   > 0: right_vec.normalize()
 
-                # --- RECORDING ---
-                if props.is_recording and context.scene.frame_current != self._current_frame:
-                    self._current_frame = context.scene.frame_current
-                    cam.keyframe_insert(data_path="location", frame=self._current_frame)
-                    cam.keyframe_insert(data_path="rotation_quaternion", frame=self._current_frame)
+            cam.location += forward_vec * (phone_data["joy_y"] * props.move_speed * 0.1)
+            cam.location += right_vec   * (phone_data["joy_x"] * props.move_speed * 0.1)
+
+            # --- RECORDING ---
+            if props.is_recording and context.scene.frame_current != self._current_frame:
+                self._current_frame = context.scene.frame_current
+                cam.keyframe_insert(data_path="location",            frame=self._current_frame)
+                cam.keyframe_insert(data_path="rotation_quaternion", frame=self._current_frame)
 
         return {'PASS_THROUGH'}
 
@@ -364,15 +645,18 @@ class PHONECAM_OT_modal(bpy.types.Operator):
         if self._timer:
             wm.event_timer_remove(self._timer)
 
+# ==========================================
+# 5. UI PANEL
+# ==========================================
 class VIEW3D_PT_phone_camera(bpy.types.Panel):
-    bl_space_type = 'VIEW_3D'
+    bl_space_type  = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Phone Cam'
-    bl_label = "Phone Camera Controller"
+    bl_category    = 'Phone Cam'
+    bl_label       = "Phone Camera Controller"
 
     def draw(self, context):
         layout = self.layout
-        props = context.scene.phone_cam_props
+        props  = context.scene.phone_cam_props
 
         if not context.scene.camera:
             box = layout.box()
@@ -387,20 +671,18 @@ class VIEW3D_PT_phone_camera(bpy.types.Panel):
 
         row = layout.row(align=True)
         if props.is_recording:
-            # Changed icon to 'REC'
-            row.operator("phonecam.toggle_record", text="Stop Recording", icon='REC')
+            row.operator("phonecam.toggle_record", text="Stop Recording",  icon='REC')
         else:
-            # Changed icon to 'REC'
             row.operator("phonecam.toggle_record", text="Start Recording", icon='REC')
 
         layout.separator()
         box = layout.box()
         box.label(text="Settings", icon='MODIFIER')
-        box.prop(props, "smoothing", slider=True)
+        box.prop(props, "smoothing",  slider=True)
         box.prop(props, "move_speed", slider=True)
 
 # ==========================================
-# 5. REGISTRATION
+# 6. REGISTRATION
 # ==========================================
 classes = (
     PhoneCamSettings,
