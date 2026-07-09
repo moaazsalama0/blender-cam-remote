@@ -559,9 +559,21 @@ class PHONECAM_OT_modal(bpy.types.Operator):
             if not cam or not phone_data["sensor_ready"]:
                 return {'PASS_THROUGH'}
 
+            # --- Coordinate frame transformation (constant, computed once) ---
+            # Phone's raw quaternion axes don't share the same labeling as
+            # Blender's camera axes (empirically: phone z<->pitch, phone x<->roll,
+            # phone y<->yaw). Q_FRAME is the proper rotation quaternion encoding
+            # that correspondence. Applying it via conjugation (not component
+            # swizzling) is mathematically exact at every rotation magnitude.
+            Q_FRAME = Quaternion((0.5, 0.5, -0.5, -0.5))
+
+            def phone_to_blender(q):
+                return Q_FRAME @ q @ Q_FRAME.inverted()
+
             # --- CALIBRATION ---
             # Runs once when real sensor data first arrives.
-            # We snapshot the phone's quaternion and the camera's quaternion at that moment.
+            # We snapshot the phone's quaternion and the camera's quaternion at
+            # that moment, then compute a fixed world-space mount offset.
             if not hasattr(self, '_is_calibrated'):
                 self._is_calibrated = False
 
@@ -569,44 +581,37 @@ class PHONECAM_OT_modal(bpy.types.Operator):
                 cam.rotation_mode = 'QUATERNION'
                 self._start_cam_q = cam.rotation_quaternion.copy()
 
-                # Snapshot the raw phone quaternion at calibration time
-                self._start_phone_q = Quaternion((
+                start_phone_q = Quaternion((
                     phone_data["q_w"],
                     phone_data["q_x"],
                     phone_data["q_y"],
                     phone_data["q_z"],
                 ))
-                # Pre-compute its inverse so we can extract delta each frame
-                self._start_phone_q_inv = self._start_phone_q.inverted()
+                start_phone_q.normalize()
+
+                # Transform phone's start orientation into Blender's axis frame,
+                # then compute the fixed mount offset in that (now-shared) frame:
+                # Q_cam = Q_phone_b @ Q_mount  =>  Q_mount = Q_phone_b^-1 @ Q_cam
+                start_phone_q_b = phone_to_blender(start_phone_q)
+                self._mount_q = start_phone_q_b.inverted() @ self._start_cam_q
                 self._is_calibrated = True
 
             # --- APPLY ROTATION ---
-            # Build current phone quaternion (sensor space: x-forward, y-left, z-up)
+            # Build current phone quaternion (raw sensor components)
             curr_phone_q = Quaternion((
                 phone_data["q_w"],
                 phone_data["q_x"],
                 phone_data["q_y"],
                 phone_data["q_z"],
             ))
+            curr_phone_q.normalize()
 
-            # Delta = how much has the phone rotated since calibration?
-            delta_q = self._start_phone_q_inv @ curr_phone_q
-
-            # --- Axis remap: phone space → Blender camera space ---
-            # AbsoluteOrientationSensor uses East-North-Up (ENU) world frame.
-            # Blender camera looks down its local -Y axis, Z is up.
-            # Remap: phone X → Blender -Y (pitch), phone Z → Blender Z (yaw)
-            # Swap and negate to align axes:
-            remapped_q = Quaternion((
-                 delta_q.w,
-                -delta_q.z,   # phone yaw (z) → Blender yaw (z), negated for correct direction
-                -delta_q.x,   # phone pitch (x) → Blender pitch (-y mapped to x)
-                 delta_q.y,
-            ))
-            remapped_q.normalize()
-
-            # Apply delta on top of the camera's original rotation at calibration
-            target_q = self._start_cam_q @ remapped_q
+            # Transform to Blender's axis frame, then apply the fixed mount
+            # offset. This is the phone's true world-space rotation (not a
+            # delta relative to the tilted calibration pose), re-labeled into
+            # Blender axes and composed in world space -- exact at all angles.
+            curr_phone_q_b = phone_to_blender(curr_phone_q)
+            target_q = curr_phone_q_b @ self._mount_q
 
             # Dot-product check: ensure slerp always takes the short path
             if cam.rotation_quaternion.dot(target_q) < 0:
@@ -614,18 +619,34 @@ class PHONECAM_OT_modal(bpy.types.Operator):
 
             # --- TEMPORARY DEBUG LOGGING (remove after diagnosis) ---
             self._debug_tick += 1
-            if self._debug_tick % 10 == 0:
+            target_euler = target_q.to_euler()
+            pitch_deg = math.degrees(target_euler.x)
+
+            # Continuity check: how close is this frame's target_q to the last one?
+            # Should stay near 1.0. A sudden drop means a real discontinuity.
+            if not hasattr(self, '_prev_target_q'):
+                self._prev_target_q = target_q.copy()
+            continuity = self._prev_target_q.dot(target_q)
+            flag = "  <<< FLAG: DISCONTINUITY" if abs(continuity) < 0.9 else ""
+
+            # Dense logging once we're near-vertical (>55 deg), sparse otherwise
+            near_vertical = abs(pitch_deg) > 55
+            should_print = near_vertical or (self._debug_tick % 10 == 0)
+
+            if should_print:
                 cam_euler_before = cam.rotation_quaternion.to_euler()
-                target_euler = target_q.to_euler()
                 print(
                     "\n--- PhoneCam Debug ---\n"
                     f"curr_phone_q   : w={curr_phone_q.w: .3f} x={curr_phone_q.x: .3f} y={curr_phone_q.y: .3f} z={curr_phone_q.z: .3f}\n"
-                    f"delta_q        : w={delta_q.w: .3f} x={delta_q.x: .3f} y={delta_q.y: .3f} z={delta_q.z: .3f}\n"
-                    f"remapped_q     : w={remapped_q.w: .3f} x={remapped_q.x: .3f} y={remapped_q.y: .3f} z={remapped_q.z: .3f}  (len={remapped_q.magnitude:.4f})\n"
+                    f"curr_phone_q_b : w={curr_phone_q_b.w: .3f} x={curr_phone_q_b.x: .3f} y={curr_phone_q_b.y: .3f} z={curr_phone_q_b.z: .3f}\n"
+                    f"mount_q        : w={self._mount_q.w: .3f} x={self._mount_q.x: .3f} y={self._mount_q.y: .3f} z={self._mount_q.z: .3f}\n"
                     f"target_q       : w={target_q.w: .3f} x={target_q.x: .3f} y={target_q.y: .3f} z={target_q.z: .3f}\n"
                     f"target_euler(deg): x={math.degrees(target_euler.x): .1f} y={math.degrees(target_euler.y): .1f} z={math.degrees(target_euler.z): .1f}\n"
-                    f"cam_euler_before(deg): x={math.degrees(cam_euler_before.x): .1f} y={math.degrees(cam_euler_before.y): .1f} z={math.degrees(cam_euler_before.z): .1f}"
+                    f"cam_euler_before(deg): x={math.degrees(cam_euler_before.x): .1f} y={math.degrees(cam_euler_before.y): .1f} z={math.degrees(cam_euler_before.z): .1f}\n"
+                    f"continuity_dot : {continuity: .4f}{flag}"
                 )
+
+            self._prev_target_q = target_q.copy()
 
             factor = 1.0 - props.smoothing
             cam.rotation_quaternion = cam.rotation_quaternion.slerp(target_q, factor)
