@@ -1,0 +1,193 @@
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: #111;
+            color: #ccc;
+            font-family: 'Courier New', monospace;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            touch-action: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ---------- LAYOUT ---------- */
+        #app {
+            display: none; /* shown after sensor init */
+            width: 100%;
+            height: 100%;
+            flex-direction: row;
+        }
+
+        /* LEFT: joystick */
+        #leftPanel {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        /* RIGHT: debug */
+        #rightPanel {
+            width: 160px;
+            border-left: 1px solid #222;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 18px 14px;
+            gap: 12px;
+            height: 100%;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        /* ---------- INIT SCREEN ---------- */
+        #initScreen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        #initScreen p {
+            font-size: 13px;
+            color: #555;
+            letter-spacing: 0.05em;
+        }
+
+        .btn {
+            background: none;
+            border: 1px solid #444;
+            color: #aaa;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            letter-spacing: 0.1em;
+            padding: 10px 24px;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: border-color 0.2s, color 0.2s;
+        }
+        .btn:active { background: #1e1e1e; }
+        .btn.danger { border-color: #5a1f1f; color: #c0392b; }
+        .btn.danger:active { background: #1e1010; }
+        .btn.record { border-color: #444; color: #aaa; }
+        .btn.record.active {
+            border-color: #c0392b;
+            color: #e74c3c;
+            animation: recPulse 1.5s ease-in-out infinite;
+        }
+        @keyframes recPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.55; }
+        }
+        .btnRow { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; margin-top: 12px; padding-bottom: 4px; }
+
+        /* ---------- JOYSTICK ---------- */
+        #joyBase {
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            border: 1px solid #2a2a2a;
+            background: radial-gradient(circle at center, #1c1c1c 0%, #141414 100%);
+            position: relative;
+            touch-action: none;
+        }
+
+        #joyKnob {
+            width: 72px;
+            height: 72px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 38% 35%, #3a3a3a, #1a1a1a);
+            border: 1px solid #333;
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            transition: transform 0.08s ease-out;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.6);
+        }
+
+        /* crosshair lines on base */
+        #joyBase::before, #joyBase::after {
+            content: '';
+            position: absolute;
+            background: #222;
+        }
+        #joyBase::before { width: 1px; height: 60%; top: 20%; left: 50%; }
+        #joyBase::after  { width: 60%; height: 1px; left: 20%; top: 50%; }
+
+        /* ---------- DEBUG PANEL ---------- */
+        .debugSection {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .debugLabel {
+            font-size: 9px;
+            letter-spacing: 0.15em;
+            color: #333;
+            text-transform: uppercase;
+        }
+
+        /* WiFi band pill */
+        #wifiBand {
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            padding: 3px 0;
+            color: #555;
+        }
+        #wifiBand.ghz5  { color: #2ecc71; }
+        #wifiBand.ghz24 { color: #f1c40f; }
+
+        /* Quaternion rows */
+        .qRow {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #444;
+        }
+        .qRow span.axis { color: #333; }
+        .qRow span.val  { color: #666; font-variant-numeric: tabular-nums; }
+
+        /* Status dot */
+        #statusDot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: #333;
+            display: inline-block;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        #statusDot.active { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
+        #statusDot.disconnected { background: #c0392b; box-shadow: 0 0 6px #c0392b; }
+
+        #statusText {
+            font-size: 10px;
+            color: #444;
+            letter-spacing: 0.05em;
+            vertical-align: middle;
+        }
+
+        #recIndicator {
+            font-size: 10px;
+            letter-spacing: 0.1em;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        #recIndicator .dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: #333;
+        }
+        #recIndicator.active { color: #e74c3c; }
+        #recIndicator.active .dot {
+            background: #e74c3c;
+            box-shadow: 0 0 6px #e74c3c;
+            animation: recPulse 1.5s ease-in-out infinite;
+        }

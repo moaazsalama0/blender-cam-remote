@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CAM</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- INIT SCREEN -->
+<div id="initScreen">
+    <p>BLENDER CAM</p>
+    <button class="btn" id="connectBtn">ENABLE SENSORS</button>
+</div>
+
+<!-- MAIN APP (landscape) -->
+<div id="app" style="display:none; width:100%; height:100%; flex-direction:row;">
+
+    <!-- LEFT: joystick -->
+    <div id="leftPanel" style="flex:1; display:flex; align-items:center; justify-content:center; position:relative;">
+        <div id="joyBase">
+            <div id="joyKnob"></div>
+        </div>
+    </div>
+
+    <!-- RIGHT: debug -->
+    <div id="rightPanel" style="width:160px; border-left:1px solid #1e1e1e; display:flex; flex-direction:column; justify-content:space-between; padding:18px 14px;">
+
+        <div style="display:flex; flex-direction:column; gap:18px;">
+
+            <div class="debugSection">
+                <div class="debugLabel">status</div>
+                <div>
+                    <span id="statusDot"></span>
+                    <span id="statusText">waiting</span>
+                </div>
+                <div id="recIndicator"><span class="dot"></span><span id="recText">not recording</span></div>
+            </div>
+
+            <div class="debugSection">
+                <div class="debugLabel">wifi band</div>
+                <div id="wifiBand">—</div>
+            </div>
+
+            <div class="debugSection">
+                <div class="debugLabel">orientation</div>
+                <div class="qRow"><span class="axis">w</span><span class="val" id="qw">—</span></div>
+                <div class="qRow"><span class="axis">x</span><span class="val" id="qx">—</span></div>
+                <div class="qRow"><span class="axis">y</span><span class="val" id="qy">—</span></div>
+                <div class="qRow"><span class="axis">z</span><span class="val" id="qz">—</span></div>
+            </div>
+
+        </div>
+
+        <div class="btnRow">
+            <button class="btn record" id="recordBtn">START RECORDING</button>
+            <button class="btn" id="recalBtn">RECALIBRATE</button>
+            <button class="btn danger" id="stopBtn">CLOSE STREAM</button>
+        </div>
+
+    </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
