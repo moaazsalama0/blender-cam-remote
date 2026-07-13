@@ -1,65 +1,91 @@
 # 📱 Phone Camera Controller for Blender
 
 > 🚧 **STATUS: WORK IN PROGRESS (WIP)** 🚧
-> This addon is currently in active development. Expect bugs, rough edges, and axis-mapping quirks!
+> Core camera tracking is stable and verified across full range of motion. A known limitation remains near-vertical orientations (see below).
 
-**Phone Camera Controller** is a Blender addon that allows you to use your mobile phone's physical sensors and touchscreen as a virtual camera controller. Move, pan, and tilt your Blender camera in real-time by physically moving your phone and using on-screen virtual joysticks.
+**Phone Camera Controller** is a Blender addon that turns your phone into a physical camera rig for Blender. Move, pan, and tilt your phone in real life, and your Blender camera follows in real time — great for backrooms-style found-footage shots, virtual cinematography, and handheld animation.
 
 ---
 
 ## ⚙️ How It Works
 
-Under the hood, this addon turns your Blender instance into a **local web server**. 
-1. When you click "Start Streaming", a background Python thread spins up an HTTP server on port `8000`.
-2. Your phone connects to this server over your local Wi-Fi network and loads a lightweight HTML/JS web page.
-3. The web page utilizes the browser's `AbsoluteOrientationSensor` (DeviceOrientation API) and touch events to capture your phone's physical rotation (as quaternions) and virtual joystick inputs.
-4. The phone continuously POSTs this sensor data back to Blender.
-5. A Blender Modal Operator intercepts this incoming data, calculates the rotational delta based on an initial calibration snapshot, remaps the phone's coordinate space to Blender's camera space, and applies the transformations to the active 3D camera in real-time. It can also record keyframes for animation!
+This addon turns your Blender instance into a local web server:
+
+1. Click **Start Streaming** in Blender — a background thread spins up an HTTP server on port `8000`.
+2. Your phone connects over your local Wi-Fi network and loads a lightweight web page (served from the addon's `web/` folder).
+3. The page reads your phone's rotation via the `AbsoluteOrientationSensor` API (falling back to `DeviceOrientationEvent` where needed) and captures virtual joystick input.
+4. The phone continuously POSTs this data back to Blender.
+5. A Blender Modal Operator applies it to the active camera: a fixed axis-frame transform (`Q_FRAME` conjugation) maps the phone's rotation into Blender's camera space, and a one-time calibration offset locks in your starting pose as neutral. Recording inserts real keyframes as the timeline plays.
 
 ---
 
 > [!IMPORTANT]
-> ### ⚠️ VERY IMPORTANT: Usage Instructions
-> Please follow these steps **exactly** to ensure the sensors connect and function correctly:
-> 
-> 1. **Calibrate your phone:** Make sure the phone is calibrated by holding it perfectly level in a **landscape** orientation *before* you do anything else.
-> 2. **Start the server:** In Blender's 3D Viewport Sidebar (`N` key) under the **Phone Cam** tab, hit **Start Streaming**.
-> 3. **Connect your phone:** Open your phone's browser and navigate to `http://[your-ip]:8000`. 
->    *(To find your IP, check your computer's network settings for your local **IPv4 Address**, example: `192.168.100.x`)*.
-> 4. **Use the right browser:** Make sure to use **FIREFOX**, **NOT CHROME**. 
->    *(Reason: Chrome's strict security policies block HTTP sensor requests and the AbsoluteOrientationSensor API on insecure local networks without SSL/HTTPS).*
-> 5. **Control the camera:** Tap "ENABLE SENSORS" on the web page. You are done! Control the camera!
-> 6. **Stop streaming:** To stop the connection, click **Stop Streaming** in Blender.
+> ### ⚠️ Usage Instructions
+> Follow these steps **exactly** to get a clean connection:
+>
+> 1. **Calibrate your phone:** hold it level in **landscape** orientation *before* connecting. This becomes your "forward."
+> 2. **Start the server:** in Blender's 3D Viewport Sidebar (`N` key), under the **Phone Cam** tab, hit **Start Streaming**.
+> 3. **Connect your phone:** open your phone's browser and go to `http://[your-ip]:8000`.
+>    *(Find your IP in your computer's network settings — your local **IPv4 Address**, e.g. `192.168.100.x`.)*
+> 4. **Use Firefox, not Chrome:** Chrome blocks sensor access over plain HTTP on a local network; Firefox for Android does not have this restriction. This addon runs over HTTP, so Firefox is currently required.
+> 5. **Enable sensors:** tap **ENABLE SENSORS** on the phone page. You're now controlling the camera.
+> 6. **Recalibrate anytime:** if you bump the phone or want a new neutral pose mid-session, tap **RECALIBRATE** — no need to restart the stream.
+> 7. **Record:** tap **START RECORDING** on the phone (or press Play in Blender) to insert keyframes as you move. Tap it again to stop.
+> 8. **End the session:** tap **CLOSE STREAM** on the phone, or **Stop Streaming** in Blender.
 
 ---
 
-## 🐛 Known Bugs
+## ✨ Features
 
-Since this is a WIP, there are a few known issues with the sensor math and axis remapping that are being actively worked on:
+- Real-time phone rotation → Blender camera rotation, calibrated to your starting pose
+- Virtual joystick → ground-locked camera movement
+- **Record** button (phone) — start/stop inserting keyframes without touching the keyboard
+- **Recalibrate** button (phone) — reset "forward" mid-session without restarting the stream
+- Live connection status + recording indicator on the phone screen, so you know it's actually tracking before you start walking
+- Optional smoothing & sensitivity, adjustable from the Blender sidebar
 
-* **Inverted Tilt:** Tilting the phone makes the camera go in the opposite direction.
-* **Calibration Sensitivity:** Holding the phone in an uncalibrated position when starting the stream will make the camera rotation go completely haywire.
-* **Axis Bleed/Drift:** The camera slightly tilts (rolls) when rotating the phone (yawing).
+---
+
+## 🐛 Known Limitations
+
+* **Near-vertical "inversion":** when the phone swings through roughly ±90° from level (pointing straight down/up), yaw and roll become mathematically ambiguous — a textbook gimbal-style singularity, not a code bug. Wrist imprecision near this pole can look like a sudden flip. Workaround: avoid holding shots dead-vertical; treat it the way you would a real gimbal's limits. A more robust pole-handling approach is on the roadmap.
+
+*(Earlier versions had inverted tilt, calibration sensitivity, and axis-bleed/roll-drift issues — these were root-caused to an incorrect axis-remapping approach and are fixed as of the current `Q_FRAME`-based rotation pipeline.)*
 
 ---
 
 ## 📥 Installation
 
-1. Download the `phone_cam.py` file to your computer (`phone_cam_debugging.py` is for advanced users).
-2. Open Blender (Requires **Blender 5.1+**).
+1. Download `phone_cam_controller.zip` from the [Releases](../../releases) page (don't use GitHub's "Download ZIP" on the repo itself — see note below).
+2. Open Blender (**Blender 5.1+** required).
 3. Go to `Edit > Preferences > Add-ons`.
-4. Click the **Install...** button in the top right and select `phone_cam.py`.
+4. Click **Install...** (top right) and select `phone_cam_controller.zip`.
 5. Enable the addon by checking the box next to **Camera: Phone Camera Controller**.
-6. Open the Sidebar in the 3D Viewport (press `N`) and navigate to the **Phone Cam** tab.
+6. Open the Sidebar in the 3D Viewport (press `N`) and go to the **Phone Cam** tab.
+
+> **Why not "Download ZIP" from GitHub?** That downloads the whole repo (README, loose files, no proper folder layout) and Blender can't install it directly. The Releases page ships a zip pre-packaged as `phone_cam_controller/__init__.py`, which is what Blender's installer expects.
 
 ---
 
 ## 📋 Requirements
 
-* **Blender:** 5.1.0 or newer.
-* **Network:** Your PC and mobile phone must be connected to the **same local Wi-Fi network**.
-* **Mobile Browser:** **Mozilla Firefox** (Chrome/Safari currently have restrictions with local HTTP sensor APIs).
-* **Hardware:** A smartphone with a functioning gyroscope/accelerometer.
+* **Blender:** 5.1.0 or newer
+* **Network:** PC and phone on the **same local Wi-Fi network**
+* **Mobile Browser:** **Firefox for Android** (Chrome currently blocks sensor access over local HTTP — see Usage Instructions above)
+* **Hardware:** a smartphone with a working gyroscope/accelerometer
 
 ---
-*Author: Moaaz Salama | Version: 0.0.2*
+
+## 🗂 Project Structure
+
+```
+phone_cam_controller/
+├── __init__.py        # Blender addon: HTTP server, modal operator, rotation math
+└── web/
+    ├── index.html      # phone UI structure
+    ├── style.css        # phone UI styling
+    └── app.js           # sensor capture, joystick, buttons, networking
+```
+
+---
+*Author: Moaaz Salama | Version: 0.0.4*
